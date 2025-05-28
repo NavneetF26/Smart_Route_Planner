@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>🚆 Smart Train Route Finder</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: linear-gradient(to right, #d3cce3, #e9e4f0);
+      padding: 40px;
+    }
+    .container {
+      background: #fff;
+      padding: 25px;
+      border-radius: 12px;
+      width: 420px;
+      margin: auto;
+      box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+    }
+    h2 {
+      text-align: center;
+      color: #4b0082;
+    }
+    label {
+      font-weight: bold;
+    }
+    input, select, button {
+      width: 100%;
+      padding: 10px;
+      margin: 12px 0;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+    button {
+      background-color: #6a0dad;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #530b8b;
+    }
+    #result {
+      margin-top: 20px;
+      background: #f4f4f4;
+      padding: 15px;
+      border-left: 5px solid #6a0dad;
+      border-radius: 5px;
+      visibility: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>🚆 Plan Your Train Journey</h2>
+
+    <label for="start">Start Station:</label>
+    <input list="stationsList" id="start" placeholder="Type or choose a station">
+
+    <label for="end">Destination Station:</label>
+    <input list="stationsList" id="end" placeholder="Type or choose a station">
+
+    <datalist id="stationsList"></datalist>
+
+    <label for="criteria">Optimize for:</label>
+    <select id="criteria">
+      <option value="time">⏱️ Fastest Time</option>
+      <option value="cost">💰 Lowest Cost</option>
+      <option value="distance">📏 Shortest Distance</option>
+    </select>
+
+    <button onclick="findRoute()">🔍 Find Best Route</button>
+
+    <div id="result"></div>
+    <div id="map" style="height: 400px; margin-top: 20px; border-radius: 10px;"></div>
+  </div>
+
+  <!-- Load station mapping -->
+  <script src="graph_data.js"></script>
+  <script>
+    const stationMap = graphData.station_map;
+    const stations = Object.values(stationMap);
+    const stationToId = Object.fromEntries(Object.entries(stationMap).map(([id, name]) => [name, parseInt(id)]));
+
+    const datalist = document.getElementById("stationsList");
+    stations.forEach(station => {
+      const option = document.createElement("option");
+      option.value = station;
+      datalist.appendChild(option);
+    });
+
+    function loadGraph(constraint) {
+      const V = Object.keys(stationMap).length;
+      const G = Array.from({ length: V }, () => []);
+      graphData.edges.forEach(edge => {
+        G[edge.from].push([edge.to, edge[constraint]]);
+      });
+      return G;
+    }
+
+    function dijkstra(G, V, fromNode, toNode) {
+      const dist = Array(V).fill(Infinity);
+      const parent = Array(V).fill(-1);
+      const visited = Array(V).fill(false);
+      const pq = [[0, fromNode]];
+
+      dist[fromNode] = 0;
+
+      while (pq.length > 0) {
+        pq.sort((a, b) => a[0] - b[0]);
+        const [currDist, u] = pq.shift();
+
+        if (visited[u]) continue;
+        visited[u] = true;
+
+        if (u === toNode) break;
+
+        for (const [v, weight] of G[u]) {
+          if (!visited[v] && dist[u] + weight < dist[v]) {
+            dist[v] = dist[u] + weight;
+            parent[v] = u;
+            pq.push([dist[v], v]);
+          }
+        }
+      }
+
+      const route = [];
+      if (dist[toNode] === Infinity) return [-1, route];
+
+      let cur = toNode;
+      while (cur !== -1) {
+        route.push(cur);
+        cur = parent[cur];
+      }
+      route.reverse();
+
+      return [dist[toNode], route];
+    }
+
+    let routePolyline;
+
+    async function drawRoute(routeNames) {
+      const coordResponse = await fetch('mapped_station_coordinates.json');
+      const coordData = await coordResponse.json();
+
+      const latlngs = routeNames.map(code => {
+        const coords = coordData[code];
+        if (!coords) return null;
+        return [coords[1], coords[0]]; // Leaflet uses [lat, lng]
+      }).filter(Boolean);
+
+      if (routePolyline) {
+        map.removeLayer(routePolyline);
+      }
+
+      routePolyline = L.polyline(latlngs, {
+        color: 'blue',
+        weight: 4,
+        opacity: 0.8
+      }).addTo(map);
+
+      map.fitBounds(routePolyline.getBounds());
+    }
+
+    async function findRoute() {
+      const start = document.getElementById("start").value.trim();
+      const end = document.getElementById("end").value.trim();
+      const criteria = document.getElementById("criteria").value;
+      const resultBox = document.getElementById("result");
+
+      if (!(start in stationToId) || !(end in stationToId)) {
+        resultBox.innerHTML = "<b style='color:red;'>❌ Please select valid stations from the list.</b>";
+        resultBox.style.visibility = "visible";
+        return;
+      }
+
+      const from = stationToId[start];
+      const to = stationToId[end];
+      const graph = loadGraph(criteria);
+      const [dist, path] = dijkstra(graph, stations.length, from, to);
+
+      if (dist === -1) {
+        resultBox.innerHTML = `<b style='color:red;'>❌ No route found between ${start} and ${end}.</b>`;
+      } else {
+        const routeNames = path.map(id => stationMap[id]);
+        resultBox.innerHTML = `
+          ✅ Route from <b>${start}</b> to <b>${end}</b> based on <b>${criteria}</b>:<br><br>
+          <b>Path:</b> ${routeNames.join(" ➔ ")}<br>
+          <b>${criteria.charAt(0).toUpperCase() + criteria.slice(1)}:</b> ${dist}
+        `;
+        await drawRoute(routeNames);
+      }
+
+      resultBox.style.visibility = "visible";
+    }
+  </script>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([32.85, 75.0], 9);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: 'Map data © OpenStreetMap contributors'
+    }).addTo(map);
+
+    let fullNetworkLayer;
+
+    fetch('trains.json')
+      .then(res => res.json())
+      .then(data => {
+        fullNetworkLayer = L.geoJSON(data, {
+          style: {
+            color: '#cccccc',
+            weight: 1.5,
+            opacity: 0.5
+          },
+          onEachFeature: function (feature, layer) {
+            const props = feature.properties;
+            layer.bindPopup(`
+              <b>${props.name}</b><br>
+              ${props.from_station_name} ➔ ${props.to_station_name}<br>
+              🕑 ${props.departure} ➔ ${props.arrival}<br>
+              🚆 ${props.type}<br>
+              📏 ${props.distance} km
+            `);
+          }
+        }).addTo(map);
+      })
+      .catch(err => console.error("Failed to load train data:", err));
+  </script>
+</body>
+</html>
